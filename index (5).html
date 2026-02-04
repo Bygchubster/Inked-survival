@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ink Survival: The Sketchbook</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Special+Elite&family=VT323&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Special Elite', cursive;
+            background-color: #e7e5e4;
+            color: #1c1917;
+            overflow: hidden;
+        }
+        .mono {
+            font-family: 'VT323', monospace;
+        }
+        canvas {
+            image-rendering: auto;
+        }
+        .paper-texture {
+            background-color: #e7e5e4;
+            background-image: url("https://www.transparenttextures.com/patterns/natural-paper.png");
+        }
+        .sketch-border {
+            border: 2px solid #1c1917;
+            border-radius: 255px 15px 225px 15px/15px 225px 15px 255px;
+        }
+        .sketch-button {
+            border: 2px solid #1c1917;
+            border-radius: 255px 15px 225px 15px/15px 225px 15px 255px;
+            transition: all 0.2s ease;
+        }
+        .sketch-button:hover {
+            transform: translate(-2px, -2px) rotate(-1deg);
+            box-shadow: 4px 4px 0px #1c1917;
+        }
+        .sketch-button:active {
+            transform: translate(1px, 1px);
+            box-shadow: 1px 1px 0px #1c1917;
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+          width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+          background: #1c191720;
+          border-radius: 10px;
+        }
+    </style>
+</head>
+<body class="paper-texture">
+    <div id="root"></div>
+    
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <script>
+    const { createElement: e, useState, useCallback, useRef, useEffect } = React;
+    const { createRoot } = ReactDOM;
+
+    const GameStatus = {
+      MENU: 'MENU',
+      PLAYING: 'PLAYING',
+      GAMEOVER: 'GAMEOVER',
+      LEADERBOARD: 'LEADERBOARD'
+    };
+
+    async function getVoidOverseerTaunt(score, timeInSeconds) {
+      const fallbacks = [
+        "The ink has run dry for you.",
+        "A messy smudge on an otherwise clean page.",
+        "Crumpled up and tossed in the bin.",
+        "You were more of a doodle than a masterpiece.",
+        "Too many blots, not enough craft.",
+        "Your technique lacks... well, everything.",
+        "Even a pencil with no lead could do better.",
+        "The margins exist for a reason.",
+        "A lack of vision usually results in a messy floor.",
+        "This isn't 'abstract', it's just 'failure'.",
+        "The paper deserves more respect than this."
+      ];
+      return fallbacks[Math.floor(Math.random() * fallbacks.length)];
+    }
+
+    function GameCanvas({ onGameOver, status }) {
+      const canvasRef = useRef(null);
+      const requestRef = useRef(null);
+      const lastTimeRef = useRef(null);
+      
+      const GAME_WIDTH = 500;
+      const GAME_HEIGHT = 500;
+
+      const waveRef = useRef(1);
+      const roundInWaveRef = useRef(0);
+      const targetRoundsRef = useRef(7);
+      const hazardsRef = useRef([]);
+      const scoreRef = useRef(0);
+      const startTimeRef = useRef(Date.now());
+      const keysRef = useRef({});
+      const particlesRef = useRef([]);
+      const waveFlashRef = useRef(0);
+      
+      const tutorialEndTimeRef = useRef(0);
+      const TUTORIAL_DURATION = 4000;
+
+      const isWaveBreakRef = useRef(false);
+      const waveBreakEndTimeRef = useRef(0);
+      const WAVE_BREAK_DURATION = 2000;
+
+      const playerRef = useRef({
+        x: 250, y: 250, radius: 16, speed: 0.22, energy: 100, isSprinting: false
+      });
+
+      const spawnParticles = (x, y) => {
+        for(let i=0; i<8; i++) {
+          particlesRef.current.push({
+            x, y, vx: (Math.random() - 0.5) * 10, vy: (Math.random() - 0.5) * 10, life: 1.0
+          });
+        }
+      };
+
+      const spawnPattern = useCallback(() => {
+        const now = Date.now();
+        const wave = waveRef.current;
+        const warnTime = Math.max(150, 1300 - (wave * 80)); 
+        const activeTime = Math.max(200, 800 - (wave * 25));
+        const newHazards = [];
+        const create = (x, y, w, h, delay = 0) => ({
+          id: Math.random().toString(), x, y, w, h,
+          startTime: now + delay, warningDuration: warnTime, activeDuration: activeTime
+        });
+        const r = Math.max(25, 60 - (wave * 1)); 
+        const fx = r + Math.random() * (GAME_WIDTH - r * 2);
+        const fy = r + Math.random() * (GAME_HEIGHT - r * 2);
+        newHazards.push(create(0, 0, GAME_WIDTH, fy - r));
+        newHazards.push(create(0, fy + r, GAME_WIDTH, GAME_HEIGHT - (fy + r)));
+        newHazards.push(create(0, fy - r, fx - r, r * 2));
+        newHazards.push(create(fx + r, fy - r, GAME_WIDTH - (fx + r), r * 2));
+        hazardsRef.current.push(...newHazards);
+      }, []);
+
+      const init = useCallback(() => {
+        playerRef.current.x = 250; playerRef.current.y = 250; playerRef.current.energy = 100;
+        hazardsRef.current = []; scoreRef.current = 0; waveRef.current = 1;
+        roundInWaveRef.current = 0; targetRoundsRef.current = 7;
+        startTimeRef.current = Date.now(); waveFlashRef.current = 0;
+        isWaveBreakRef.current = false;
+        tutorialEndTimeRef.current = Date.now() + TUTORIAL_DURATION;
+      }, []);
+
+      const update = (time) => {
+        if (status !== GameStatus.PLAYING) return;
+        if (lastTimeRef.current === null) lastTimeRef.current = time;
+        const dt = Math.min(time - lastTimeRef.current, 32);
+        lastTimeRef.current = time;
+        const ctx = canvasRef.current?.getContext('2d');
+        if (!ctx) return;
+        const now = Date.now();
+        const isTutorial = now < tutorialEndTimeRef.current;
+        const elapsed = (now - startTimeRef.current) / 1000;
+        if (!isTutorial) {
+          scoreRef.current = Math.floor((elapsed - (TUTORIAL_DURATION/1000)) * 100 + (waveRef.current - 1) * 1000);
+          if (scoreRef.current < 0) scoreRef.current = 0;
+        }
+        const mx = (keysRef.current['ArrowRight'] || keysRef.current['d'] || keysRef.current['D'] ? 1 : 0) - (keysRef.current['ArrowLeft'] || keysRef.current['a'] || keysRef.current['A'] ? 1 : 0);
+        const my = (keysRef.current['ArrowDown'] || keysRef.current['s'] || keysRef.current['S'] ? 1 : 0) - (keysRef.current['ArrowUp'] || keysRef.current['w'] || keysRef.current['W'] ? 1 : 0);
+        playerRef.current.isSprinting = keysRef.current[' '] && playerRef.current.energy > 0;
+        if (playerRef.current.isSprinting) { playerRef.current.energy -= 0.12 * dt; }
+        else { playerRef.current.energy = Math.min(100, playerRef.current.energy + 0.05 * dt); }
+        const speed = playerRef.current.speed * (playerRef.current.isSprinting ? 2.8 : 1);
+        const len = Math.hypot(mx, my);
+        if (len > 0) {
+          playerRef.current.x += (mx/len) * speed * dt;
+          playerRef.current.y += (my/len) * speed * dt;
+        }
+        playerRef.current.x = Math.max(playerRef.current.radius, Math.min(GAME_WIDTH - playerRef.current.radius, playerRef.current.x));
+        playerRef.current.y = Math.max(playerRef.current.radius, Math.min(GAME_HEIGHT - playerRef.current.radius, playerRef.current.y));
+        if (hazardsRef.current.length === 0 && !isTutorial) {
+          if (!isWaveBreakRef.current) {
+            roundInWaveRef.current++;
+            if (roundInWaveRef.current > targetRoundsRef.current) {
+              isWaveBreakRef.current = true;
+              waveBreakEndTimeRef.current = now + WAVE_BREAK_DURATION;
+              waveRef.current++; roundInWaveRef.current = 1;
+              targetRoundsRef.current = 7; waveFlashRef.current = 60;
+            } else { spawnPattern(); }
+          } else {
+            if (now >= waveBreakEndTimeRef.current) {
+              isWaveBreakRef.current = false; spawnPattern();
+            }
+          }
+        }
+        ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+        ctx.fillStyle = '#f5f5f4'; ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+        if (waveFlashRef.current > 0) {
+          ctx.fillStyle = `rgba(239, 68, 68, ${waveFlashRef.current / 120})`;
+          ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT); waveFlashRef.current--;
+        }
+        let minRemaining = 0; let roundPhase = 'IDLE';
+        hazardsRef.current = hazardsRef.current.filter(h => {
+          const age = now - h.startTime;
+          if (age < 0) return true;
+          if (age < h.warningDuration) {
+            const p = age / h.warningDuration;
+            const remaining = (h.warningDuration - age) / 1000;
+            minRemaining = Math.max(minRemaining, remaining); roundPhase = 'WARNING';
+            ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 2; ctx.setLineDash([5, 5]);
+            ctx.strokeRect(h.x + 2, h.y + 2, h.w - 4, h.h - 4); ctx.setLineDash([]);
+            ctx.globalAlpha = 0.1 + p * 0.2; ctx.fillStyle = '#ef4444';
+            ctx.fillRect(h.x, h.y, h.w, h.h); ctx.globalAlpha = 1;
+          } else if (age < h.warningDuration + h.activeDuration) {
+            const remaining = (h.warningDuration + h.activeDuration - age) / 1000;
+            minRemaining = Math.max(minRemaining, remaining); roundPhase = 'ACTIVE';
+            ctx.fillStyle = '#ef4444'; ctx.fillRect(h.x, h.y, h.w, h.h);
+            const closestX = Math.max(h.x, Math.min(playerRef.current.x, h.x + h.w));
+            const closestY = Math.max(h.y, Math.min(playerRef.current.y, h.y + h.h));
+            const distance = Math.hypot(playerRef.current.x - closestX, playerRef.current.y - closestY);
+            if (distance < playerRef.current.radius - 3) {
+              onGameOver(scoreRef.current, elapsed); return false;
+            }
+          } else { spawnParticles(h.x + h.w/2, h.y + h.h/2); return false; }
+          return true;
+        });
+        particlesRef.current.forEach((p, i) => {
+          p.x += p.vx; p.y += p.vy; p.life -= 0.05;
+          if (p.life > 0) {
+            ctx.fillStyle = '#ef4444'; ctx.globalAlpha = p.life;
+            ctx.beginPath(); ctx.arc(p.x, p.y, 3 * p.life, 0, Math.PI * 2); ctx.fill();
+          } else { particlesRef.current.splice(i, 1); }
+        });
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = '#1c1917'; ctx.beginPath();
+        ctx.arc(playerRef.current.x, playerRef.current.y, playerRef.current.radius, 0, Math.PI * 2);
+        ctx.fill(); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.stroke();
+        ctx.fillStyle = '#1c1917'; ctx.font = 'bold 24px VT323'; ctx.textAlign = 'left';
+        ctx.fillText(`WAVE: ${waveRef.current}`, 20, 30);
+        ctx.font = 'bold 16px VT323'; ctx.fillStyle = '#1c191788';
+        ctx.fillText(`ROUND: ${roundInWaveRef.current} / ${targetRoundsRef.current}`, 20, 50);
+        ctx.textAlign = 'right'; ctx.font = 'bold 24px VT323'; ctx.fillStyle = '#1c1917';
+        ctx.fillText(`SCORE: ${scoreRef.current}`, GAME_WIDTH - 20, 30);
+        ctx.fillStyle = '#1c191733'; ctx.fillRect(20, 60, 100, 6);
+        ctx.fillStyle = '#1c1917'; ctx.fillRect(20, 60, playerRef.current.energy, 6);
+        if (roundPhase !== 'IDLE' && !isWaveBreakRef.current) {
+          ctx.textAlign = 'center'; ctx.font = 'bold 28px VT323';
+          ctx.fillStyle = roundPhase === 'ACTIVE' ? '#ef4444' : '#1c191766';
+          ctx.fillText(`${roundPhase}: ${minRemaining.toFixed(1)}s`, GAME_WIDTH / 2, 35);
+          const barWidth = 150; const bx = (GAME_WIDTH - barWidth) / 2;
+          ctx.fillStyle = '#1c191711'; ctx.fillRect(bx, 45, barWidth, 4);
+          ctx.fillStyle = roundPhase === 'ACTIVE' ? '#ef4444' : '#1c1917';
+          ctx.fillRect(bx, 45, barWidth * Math.min(1, minRemaining / 1.5), 4);
+        }
+        if (isWaveBreakRef.current) {
+          const timeLeft = Math.max(0, (waveBreakEndTimeRef.current - now) / 1000);
+          ctx.textAlign = 'center'; ctx.fillStyle = '#ef4444'; ctx.font = 'bold 40px Special Elite';
+          ctx.fillText(`WAVE ${waveRef.current}`, GAME_WIDTH/2, GAME_HEIGHT/2 - 20);
+          ctx.font = 'bold 20px VT323'; ctx.fillStyle = '#1c1917';
+          ctx.fillText(`PREPARING... ${timeLeft.toFixed(1)}s`, GAME_WIDTH/2, GAME_HEIGHT/2 + 20);
+        }
+        if (isTutorial) {
+          const timeLeft = Math.max(0, (tutorialEndTimeRef.current - now) / 1000);
+          ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(28, 25, 23, 0.8)';
+          ctx.font = 'bold 42px Special Elite';
+          ctx.fillText('PREPARE YOURSELF', GAME_WIDTH/2, 180);
+          ctx.font = 'bold 24px VT323'; ctx.fillStyle = '#1c1917';
+          ctx.fillText('WASD TO MOVE', GAME_WIDTH/2, 240);
+          ctx.fillText('SPACE TO SPRINT', GAME_WIDTH/2, 280);
+          ctx.font = 'bold 20px VT323'; ctx.fillStyle = '#ef4444';
+          ctx.fillText(`STARTING IN ${timeLeft.toFixed(1)}s`, GAME_WIDTH/2, 340);
+          ctx.strokeStyle = '#1c1917'; ctx.lineWidth = 2; ctx.setLineDash([10, 5]);
+          ctx.strokeRect(GAME_WIDTH/2 - 120, 210, 240, 100); ctx.setLineDash([]);
+        }
+        requestRef.current = requestAnimationFrame(update);
+      };
+
+      useEffect(() => {
+        if (status === GameStatus.PLAYING) {
+          init(); requestRef.current = requestAnimationFrame(update);
+        }
+        const down = (ev) => keysRef.current[ev.key] = true;
+        const up = (ev) => keysRef.current[ev.key] = false;
+        window.addEventListener('keydown', down);
+        window.addEventListener('keyup', up);
+        return () => {
+          window.removeEventListener('keydown', down);
+          window.removeEventListener('keyup', up);
+          if (requestRef.current) cancelAnimationFrame(requestRef.current);
+        };
+      }, [status, init]);
+
+      return e('div', { className: "sketch-border shadow-[15px_15px_0px_#1c191722] bg-[#f5f5f4] overflow-hidden" },
+        e('canvas', { ref: canvasRef, width: GAME_WIDTH, height: GAME_HEIGHT, className: "block cursor-none" })
+      );
+    }
+
+    function Leaderboard({ onBack }) {
+      const [scores, setScores] = useState([]);
+      useEffect(() => {
+        const localScores = JSON.parse(localStorage.getItem('neon_void_scores') || '[]');
+        const combined = [...localScores].sort((a, b) => b.score - a.score).slice(0, 10).map((s, i) => ({ ...s, rank: i + 1 }));
+        setScores(combined);
+      }, []);
+      return e('div', { className: "max-w-xl w-full bg-[#f5f5f4] p-10 sketch-border shadow-[20px_20px_0px_rgba(28,25,23,0.3)] animate-in slide-in-from-bottom-4 duration-500" },
+        e('h2', { className: "text-4xl font-black mb-8 text-[#1c1917] flex items-center justify-between italic" },
+          e('span', null, 'ARCHIVED SKETCHES'),
+          e('span', { className: "mono text-sm not-italic opacity-40" }, 'TOP 10')
+        ),
+        e('div', { className: "space-y-2 mb-8 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar" },
+          scores.length > 0 ? scores.map((entry) => 
+            e('div', { key: `${entry.username}-${entry.score}-${entry.date}-${entry.rank}`,
+              className: "flex items-center justify-between p-4 border-b-2 border-[#1c1917]/10 hover:bg-[#e7e5e4] transition-all group relative" },
+              e('div', { className: "flex items-center gap-6" },
+                e('span', { className: "mono text-2xl font-bold text-[#1c1917]/30 group-hover:text-[#1c1917] transition-colors" }, 
+                  entry.rank?.toString().padStart(2, '0')),
+                e('div', { className: "flex flex-col" },
+                  e('span', { className: "text-xl font-black text-[#1c1917] uppercase tracking-tighter leading-none" }, entry.username),
+                  e('span', { className: "text-[10px] text-[#44403c] uppercase mono opacity-50" }, entry.date)
+                )
+              ),
+              e('div', { className: "text-right" },
+                e('span', { className: "mono text-3xl font-black text-[#1c1917] drop-shadow-sm" }, entry.score.toLocaleString())
+              )
+            )
+          ) : e('div', { className: "text-center py-10 opacity-30 italic" }, 'No sketches archived yet. Only real drafts are recorded here.')
+        ),
+        e('button', { onClick: onBack,
+          className: "w-full py-5 bg-[#1c1917] text-[#e7e5e4] text-xl font-bold sketch-button hover:bg-[#2d2a27] transition-colors shadow-lg"
+        }, 'BACK TO DRAWING BOARD')
+      );
+    }
+
+    function App() {
+      const [status, setStatus] = useState(GameStatus.MENU);
+      const [lastScore, setLastScore] = useState({ score: 0, duration: 0 });
+      const [username, setUsername] = useState(localStorage.getItem('neon_void_username') || '');
+      const [taunt, setTaunt] = useState('Watch the guides. Dodge the ink.');
+      const [loadingTaunt, setLoadingTaunt] = useState(false);
+
+      const handleGameOver = useCallback(async (score, duration) => {
+        setLastScore({ score, duration }); setStatus(GameStatus.GAMEOVER);
+        setLoadingTaunt(true);
+        const newTaunt = await getVoidOverseerTaunt(score, duration);
+        setTaunt(newTaunt); setLoadingTaunt(false);
+      }, []);
+
+      const submitScore = () => {
+        if (!username.trim()) return;
+        localStorage.setItem('neon_void_username', username);
+        const localScores = JSON.parse(localStorage.getItem('neon_void_scores') || '[]');
+        const newEntry = { username: username.toUpperCase(), score: lastScore.score, date: new Date().toISOString().split('T')[0] };
+        localStorage.setItem('neon_void_scores', JSON.stringify([...localScores, newEntry]));
+        setStatus(GameStatus.LEADERBOARD);
+      };
+
+      return e('main', { className: "relative w-full h-screen flex flex-col items-center justify-center overflow-hidden paper-texture p-4" },
+        e('div', { className: "relative z-10 w-full flex flex-col items-center justify-center max-w-4xl" },
+          status === GameStatus.MENU && e('div', { className: "text-center space-y-12 max-w-lg animate-in fade-in duration-700" },
+            e('div', { className: "space-y-4" },
+              e('h1', { className: "text-8xl font-black tracking-tighter text-[#1c1917] italic drop-shadow-md" }, 'INKED.'),
+              e('p', { className: "mono text-xl text-[#44403c] border-y-2 border-[#1c1917] py-2" }, 'DODGE THE SLASHES // WATCH THE GUIDES')
+            ),
+            e('div', { className: "flex flex-col gap-5 max-w-xs mx-auto" },
+              e('button', { onClick: () => setStatus(GameStatus.PLAYING),
+                className: "sketch-button bg-[#1c1917] text-[#e7e5e4] px-10 py-5 text-2xl font-bold" }, 'NEW DRAFT'),
+              e('button', { onClick: () => setStatus(GameStatus.LEADERBOARD),
+                className: "sketch-button bg-[#f5f5f4] text-[#1c1917] px-10 py-5 text-2xl font-bold" }, 'ARCHIVES')
+            ),
+            e('div', { className: "pt-12 grid grid-cols-3 gap-10 opacity-60" },
+              e('div', { className: "text-xs uppercase font-bold border-r border-[#1c1917]" }, 'WASD: MOVE'),
+              e('div', { className: "text-xs uppercase font-bold border-r border-[#1c1917]" }, 'SPACE: DASH'),
+              e('div', { className: "text-xs uppercase font-bold" }, 'FIND SPACE')
+            )
+          ),
+          status === GameStatus.PLAYING && e('div', { className: "flex flex-col items-center gap-4" },
+            e(GameCanvas, { status: status, onGameOver: handleGameOver }),
+            e('div', { className: "text-[#1c1917]/50 mono uppercase text-sm font-bold animate-pulse" }, 'Avoid the dark strokes')
+          ),
+          status === GameStatus.GAMEOVER && e('div', { className: "max-w-md w-full bg-[#f5f5f4] p-8 sketch-border shadow-[15px_15px_0px_rgba(28,25,23,0.1)]" },
+            e('div', { className: "text-center space-y-6" },
+              e('div', { className: "space-y-1" },
+                e('h2', { className: "text-[#1c1917] font-bold mono text-sm uppercase tracking-widest" }, 'Draft Ruined'),
+                e('p', { className: "text-5xl font-black text-[#1c1917] italic" }, 'CRITIQUE.')
+              ),
+              e('div', { className: "py-4 flex justify-around border-y-2 border-[#1c1917]/10" },
+                e('div', { className: "text-center" },
+                  e('p', { className: "text-[10px] text-[#78716c] font-bold uppercase mb-1" }, 'Score'),
+                  e('p', { className: "text-3xl font-bold text-[#1c1917] mono" }, lastScore.score.toLocaleString())
+                ),
+                e('div', { className: "text-center" },
+                  e('p', { className: "text-[10px] text-[#78716c] font-bold uppercase mb-1" }, 'Survival'),
+                  e('p', { className: "text-3xl font-bold text-[#1c1917] mono" }, lastScore.duration.toFixed(1) + 's')
+                )
+              ),
+              e('div', { className: "bg-[#e7e5e4] p-4 sketch-border italic text-[#1c1917] text-md leading-relaxed" },
+                `"${loadingTaunt ? 'Ink Warden is thinking...' : taunt}"`
+              ),
+              e('div', { className: "space-y-4" },
+                e('input', { type: "text", value: username,
+                  onChange: (ev) => setUsername(ev.target.value.toUpperCase().slice(0, 12)),
+                  placeholder: "SIGN YOUR WORK...",
+                  className: "w-full bg-transparent border-b-2 border-[#1c1917] px-2 py-2 text-2xl text-[#1c1917] mono outline-none placeholder:text-[#1c1917]/20"
+                }),
+                e('div', { className: "flex gap-4" },
+                  e('button', { onClick: submitScore, disabled: !username.trim(),
+                    className: "flex-1 py-3 bg-[#1c1917] text-[#e7e5e4] font-bold text-lg sketch-button disabled:opacity-30" }, 'SAVE'),
+                  e('button', { onClick: () => setStatus(GameStatus.PLAYING),
+                    className: "flex-1 py-3 bg-[#f5f5f4] text-[#1c1917] font-bold text-lg sketch-button" }, 'RETRY')
+                ),
+                e('button', { onClick: () => setStatus(GameStatus.MENU),
+                  className: "w-full text-[#78716c] hover:text-[#1c1917] text-[10px] font-bold uppercase tracking-widest transition-colors"
+                }, 'DISCARD')
+              )
+            )
+          ),
+          status === GameStatus.LEADERBOARD && e(Leaderboard, { onBack: () => setStatus(GameStatus.MENU) })
+        ),
+        e('div', { className: "fixed inset-0 pointer-events-none opacity-[0.05]",
+          style: { backgroundImage: 'url("https://www.transparenttextures.com/patterns/natural-paper.png")' } })
+      );
+    }
+
+    const root = createRoot(document.getElementById('root'));
+    root.render(e(App));
+    </script>
+</body>
+</html>
